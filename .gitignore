@@ -2,3 +2,4 @@
 **/*.fastq.gz
 
 .Rproj.user
+.RData
