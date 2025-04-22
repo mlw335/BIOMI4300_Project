@@ -1,0 +1,531 @@
+---
+title: "Biodiversity of Treatment Groups"
+author: "Mark Watson"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document: 
+    code_folding: show
+    theme: spacelab
+    highlight: pygments
+    keep_md: no
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+      toc_depth: 3
+  keep_md: true  
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.align = "center",
+                      fig.path = "BIOMI4300_Project/figures/PhylogeneticTree/") # send any figure output to this folder 
+```
+
+# Goals
+1. Calculate Hill Diversity of samples
+2. Evaluate rarefaction curves
+3. Evaluate diversity values
+4. Make notes of specific samples
+5. Plot biodiversity metrics
+
+# Input
+1. phytree_physeq
+
+# Output
+1. calculated biodiversity measures
+2. figures
+3. statistical tests
+
+# Scientific Question
+How do different mussel community compositions (native, invasive, mixed), affect the bacterial community composition and load of wastewater effluent?
+
+# Setting up the Environment
+## Set Seed
+```{r set-seed}
+set.seed(238428)
+```
+
+## Timing Script
+```{r timing}
+start_time <- Sys.time()
+start_time
+
+```
+
+## Load Libraries and Phyloseq Object
+```{r load-libraries}
+pacman::p_load(tidyverse, phyloseq, devtools, ggpubr, patchwork, iNEXT,  install = FALSE)
+
+# Load physeq 
+load("BIOMI4300_Project/data/phytree_preprocessed_physeq.RData")
+
+midpoint_rooted_physeq
+
+metadata_df <-
+  midpoint_rooted_physeq %>%
+  sample_data() %>%
+  data.frame()
+
+# Take a look!
+head(metadata_df)
+
+# Load in colors for plotting between different files
+source("BIOMI4300_Project/code/colors.R")
+```
+
+# BioDiversity Hill Numbers with iNEXT
+```{r iNEXT}
+# prepare input data 
+iNEXT_input_df <- 
+  midpoint_rooted_physeq %>%
+  otu_table() %>%
+  data.frame()
+
+# Quick check
+dim(iNEXT_input_df)
+
+# Run iNEXT: Calculate the Hill Numbers 
+iNEXT_data <- iNEXT(iNEXT_input_df, 
+                    q = c(0,1,2), 
+                    datatype = "abundance", 
+                    nboot = 20)  # Drop from 50 to 20
+
+  # Save the file
+save(iNEXT_data, file = "BIOMI4300_Project/data/iNEXT_data.RData")
+```
+
+# Evaluate the Diversity
+
+```{r color-prep}
+# Prepare Colors 
+color_df <- 
+  iNEXT_input_df %>%
+  colnames() %>%
+  data.frame()
+# Check
+head(color_df)
+
+colnames(color_df)[1] <- "names"
+# Check
+head(color_df)
+
+# Make a helper dataframe for plotting with colors 
+iNEXT_color_df <- 
+  color_df %>%
+  # Merge with metadata
+  left_join(metadata_df, by = "names") %>%
+  # Merge with colors for plotting with ggiNEXT
+  left_join(data.frame(community_colors = community_colors,
+            mussle_community_composition = names(community_colors)),
+            by = "mussle_community_composition") %>%
+  left_join(data.frame(
+              treatment_colors = treatment_colors,
+              treatment_type = names(treatment_colors)
+            ),
+            by = "treatment_type")
+```
+## Plotting and evaluating Diversity
+```{r evaluate-diversity}
+# Plot rarefaction! 
+# rarefaction/extrapolation curve, type = 1 
+
+# Order q: 
+  # 0 = Richness/ Number of Total taxa
+  # 1 = Exponential Shannon / Number of "Common" taxa
+  # 2 = Inverse Simpson / Number of "Dominant" taxa 
+
+# Community Type
+ggiNEXT(iNEXT_data, type = 1, facet.var = "Order.q") + 
+  facet_wrap(~Order.q, scales = "fixed") + 
+  scale_color_manual(values = iNEXT_color_df$community_colors, guide = FALSE) + 
+  scale_fill_manual(values = iNEXT_color_df$community_colors, guide = FALSE) + 
+  scale_shape_manual(values = base::rep(17, nsamples(midpoint_rooted_physeq)),
+                     guide = FALSE) +
+  labs(x = "Number of Sequences (Library Size)", 
+       y = "Effective Number of ASVs") + 
+  theme_bw() + 
+  theme(legend.position = "none")
+
+# Treatment Type
+ggiNEXT(iNEXT_data, type = 1, facet.var = "Order.q") + 
+  facet_wrap(~Order.q, scales = "fixed") + 
+  scale_color_manual(values = iNEXT_color_df$treatment_colors, guide = FALSE) + 
+  scale_fill_manual(values = iNEXT_color_df$treatment_colors, guide = FALSE) + 
+  scale_shape_manual(values = base::rep(17, nsamples(midpoint_rooted_physeq)),
+                     guide = FALSE) +
+  labs(x = "Number of Sequences (Library Size)", 
+       y = "Effective Number of ASVs") + 
+  theme_bw() + 
+  theme(legend.position = "none")
+```
+## Diversity Analysis Qualitative
+- 0 = Richness/ Number of Total taxa
+- 1 = Exponential Shannon / Number of “Common” taxa
+- 2 = Inverse Simpson / Number of “Dominant” taxa
+
+Richness seems to be the most sensitive to sequencing depth and the data may not be sufficiently sequenced to draw conclusions about richness. Shannon and Simpson seem sufficiently sequenced as seen by the plateau reached. 
+
+## Manually Plotting
+```{r manual-plot}
+# Community Plotting
+iNEXT_manual_df <- 
+  iNEXT_data$iNextEst$size_based %>%
+  dplyr::rename(names = Assemblage) %>%
+  # join with metadata 
+  left_join(., metadata_df, by = "names") %>%
+  # Add colors to data frame
+ left_join(data.frame(community_colors = community_colors,
+            mussle_community_composition = names(community_colors)),
+            by = "mussle_community_composition")
+# Inspect 
+dim(iNEXT_manual_df)
+
+# Plot it - Rarefaction Curve 
+iNEXT_manual_df %>%
+  # Filter out rows that are calcaulted by rarefaction from iNEXT
+  dplyr::filter(Method == "Rarefaction") %>%
+  # Now, let's draw the plot, be sure to group by the samples if using geom_line!
+  ggplot(aes(x = m, y= qD, color = mussle_community_composition, group = names)) + 
+  geom_line() + 
+  # Facet with the mussle_community_composition to see the samples better 
+  facet_grid(Order.q~mussle_community_composition, scales = "free") + 
+  scale_color_manual(values = community_colors) + 
+  labs(x = "Number of Sequences (Library Size)", 
+       y = "Effective Number of ASVs") + 
+  theme_bw() + 
+  #guides(color = guide_legend(nrow = 2, byrow = TRUE)) + 
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 30, vjust = 1, hjust = 1),
+        legend.title = element_blank())
+
+# Treatment Type
+iNEXT_manual_df <- 
+  iNEXT_data$iNextEst$size_based %>%
+  dplyr::rename(names = Assemblage) %>%
+  # join with metadata 
+  left_join(., metadata_df, by = "names") %>%
+  # Add colors to data frame
+ left_join(data.frame(treatment_colors = treatment_colors,
+            treatment_type = names(treatment_colors)),
+            by = "treatment_type")
+# Inspect 
+dim(iNEXT_manual_df)
+
+# Plot it - Rarefaction Curve 
+iNEXT_manual_df %>%
+  # Filter out rows that are calcaulted by rarefaction from iNEXT
+  dplyr::filter(Method == "Rarefaction") %>%
+  # Now, let's draw the plot, be sure to group by the samples if using geom_line!
+  ggplot(aes(x = m, y= qD, color = treatment_type, group = names)) + 
+  geom_line() + 
+  # Facet with the mussle_community_composition to see the samples better 
+  facet_grid(Order.q~treatment_type, scales = "free") + 
+  scale_color_manual(values = treatment_colors) + 
+  labs(x = "Number of Sequences (Library Size)", 
+       y = "Effective Number of ASVs") + 
+  theme_bw() + 
+  #guides(color = guide_legend(nrow = 2, byrow = TRUE)) + 
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 30, vjust = 1, hjust = 1),
+        legend.title = element_blank())
+```
+## Community Type
+There is a large range in Effective Number of ASVs across each variable. Richness in the "empty" and "invaded may not sufficiently plateau, but all others seem okay.
+Still concerned about the overall spread of the data, but that ma be resolved through normalization of the data. 
+
+## Treatment Type
+There is more clustering of efffective number of ASVs and a more visually clear pattern of clustering when looking at treatment type ofver looking at the community composition. Looking at it in this way it seems that we do indeed have a beter idea how our data looks. 
+
+## Boxplots
+```{r diversity-boxplots}
+# By community type
+iNEXT_manual_df %>%
+  ggplot(aes(x = mussle_community_composition, y = qD, fill = mussle_community_composition, color = mussle_community_composition)) + 
+  facet_wrap(.~Order.q, scales = "free") + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = community_colors) + 
+  scale_fill_manual(values = community_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+
+# By treatment type
+iNEXT_manual_df %>%
+  ggplot(aes(x = treatment_type, y = qD, fill = treatment_type, color = treatment_type)) + 
+  facet_wrap(.~Order.q, scales = "free") + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_fill_manual(values = treatment_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+
+# combined
+
+iNEXT_manual_df$treatment_type <- factor(iNEXT_manual_df$treatment_type, 
+                                         levels = c("raw_water", "primary_treatment", "secondary_treatment"))
+
+iNEXT_manual_df %>%
+  ggplot(aes(x = treatment_type, y = qD, fill = treatment_type, color = treatment_type)) + 
+  facet_grid(mussle_community_composition ~ Order.q, scales = "free") + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_fill_manual(values = treatment_colors) + 
+  labs(y = "Effective Number of ASVs",
+       x = "Treatment Type") + 
+  theme_bw() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank())
+
+```
+Largest differences seem to be richness across treatment types whereas overall the differences across community types seem to be minimal, but will need to have statistical tests to prove these differences.
+
+# Richness Statistical Testing Community
+```{r richness-community}
+## Make a richness data frame
+richness_df_community <- 
+  iNEXT_manual_df %>%
+  dplyr::filter(Method == "Observed") %>%
+  dplyr::filter(Order.q == 0)
+
+## Add the statistical test! 
+kruskal.test(qD ~ mussle_community_composition, data = richness_df_community)
+
+#
+community_comparisons_list <- list(
+  c("native", "invaded"),
+  c("native", "depleted"),
+  c("native", "empty"),
+  c("invaded", "depleted"),
+  c("invaded", "empty"),
+  c("depleted", "empty")
+)
+
+# Now, plot it!
+richness_df_community %>%
+  ggplot(aes(x = mussle_community_composition, y = qD, fill = mussle_community_composition, color = mussle_community_composition)) + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = community_colors) + 
+  scale_fill_manual(values = community_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  # Add pairwise comparisons p-value
+  stat_compare_means(comparisons = community_comparisons_list,
+                     tip.length = 0, hide.ns = TRUE) + 
+  stat_compare_means(label.y = 50)  +   # Add global p-value
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+```
+
+#  Richness Statistical Testing Treatment
+```{r richness-treatment}
+# Across Treatments
+## Make a richness data frame
+richness_df_treatment <- 
+  iNEXT_manual_df %>%
+  dplyr::filter(Method == "Observed") %>%
+  dplyr::filter(Order.q == 0)
+
+## Add the statistical test! 
+kruskal.test(qD ~ treatment_type, data = richness_df_treatment)
+
+treatment_comparisons_list <- list(
+  c("raw_water", "primary_treatment"),
+  c("raw_water", "secondary_treatment"),
+  c("primary_treatment", "secondary_treatment")
+)
+
+# Now, plot it!
+richness_df_treatment %>%
+  ggplot(aes(x = treatment_type, y = qD, fill = treatment_type, color = treatment_type)) + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_fill_manual(values = treatment_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  # Add pairwise comparisons p-value
+  stat_compare_means(comparisons = treatment_comparisons_list,
+                     tip.length = 0, hide.ns = TRUE) + 
+  stat_compare_means(label.y = 50)  +   # Add global p-value
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+```
+
+# Shannon Community Statistical Testing
+```{r shannon-community}
+## Make a richness data frame
+shannon_df_community <- 
+  iNEXT_manual_df %>%
+  dplyr::filter(Method == "Observed") %>%
+  dplyr::filter(Order.q == 1)
+
+## Add the statistical test! 
+kruskal.test(qD ~ mussle_community_composition, data = richness_df_community)
+
+#
+community_comparisons_list <- list(
+  c("native", "invaded"),
+  c("native", "depleted"),
+  c("native", "empty"),
+  c("invaded", "depleted"),
+  c("invaded", "empty"),
+  c("depleted", "empty")
+)
+
+# Now, plot it!
+shannon_df_community %>%
+  ggplot(aes(x = mussle_community_composition, y = qD, fill = mussle_community_composition, color = mussle_community_composition)) + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = community_colors) + 
+  scale_fill_manual(values = community_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  # Add pairwise comparisons p-value
+  stat_compare_means(comparisons = community_comparisons_list,
+                     tip.length = 0, hide.ns = TRUE) + 
+  stat_compare_means(label.y = 50)  +   # Add global p-value
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+```
+
+#  Shannon Statistical Testing Treatment
+```{r shannon-treatment}
+# Across Treatments
+## Make a richness data frame
+shannon_df_treatment <- 
+  iNEXT_manual_df %>%
+  dplyr::filter(Method == "Observed") %>%
+  dplyr::filter(Order.q == 1)
+
+## Add the statistical test! 
+kruskal.test(qD ~ treatment_type, data = richness_df_treatment)
+
+treatment_comparisons_list <- list(
+  c("raw_water", "primary_treatment"),
+  c("raw_water", "secondary_treatment"),
+  c("primary_treatment", "secondary_treatment")
+)
+
+# Now, plot it!
+shannon_df_treatment %>%
+  ggplot(aes(x = treatment_type, y = qD, fill = treatment_type, color = treatment_type)) + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_fill_manual(values = treatment_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  # Add pairwise comparisons p-value
+  stat_compare_means(comparisons = treatment_comparisons_list,
+                     tip.length = 0, hide.ns = TRUE) + 
+  stat_compare_means(label.y = 50)  +   # Add global p-value
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+```
+
+# Simpson Community Statistical Testing
+```{r simpson-community}
+## Make a richness data frame
+simpson_df_community <- 
+  iNEXT_manual_df %>%
+  dplyr::filter(Method == "Observed") %>%
+  dplyr::filter(Order.q == 2)
+
+## Add the statistical test! 
+kruskal.test(qD ~ mussle_community_composition, data = richness_df_community)
+
+#
+community_comparisons_list <- list(
+  c("native", "invaded"),
+  c("native", "depleted"),
+  c("native", "empty"),
+  c("invaded", "depleted"),
+  c("invaded", "empty"),
+  c("depleted", "empty")
+)
+
+# Now, plot it!
+simpson_df_community %>%
+  ggplot(aes(x = mussle_community_composition, y = qD, fill = mussle_community_composition, color = mussle_community_composition)) + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = community_colors) + 
+  scale_fill_manual(values = community_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  # Add pairwise comparisons p-value
+  stat_compare_means(comparisons = community_comparisons_list,
+                     tip.length = 0, hide.ns = TRUE) + 
+  stat_compare_means(label.y = 50)  +   # Add global p-value
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+```
+
+#  Simpson Statistical Testing Treatment
+```{r simoson-treatment}
+# Across Treatments
+## Make a richness data frame
+simpson_df_treatment <- 
+  iNEXT_manual_df %>%
+  dplyr::filter(Method == "Observed") %>%
+  dplyr::filter(Order.q == 2)
+
+## Add the statistical test! 
+kruskal.test(qD ~ treatment_type, data = richness_df_treatment)
+
+treatment_comparisons_list <- list(
+  c("raw_water", "primary_treatment"),
+  c("raw_water", "secondary_treatment"),
+  c("primary_treatment", "secondary_treatment")
+)
+
+# Now, plot it!
+simpson_df_treatment %>%
+  ggplot(aes(x = treatment_type, y = qD, fill = treatment_type, color = treatment_type)) + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_fill_manual(values = treatment_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  # Add pairwise comparisons p-value
+  stat_compare_means(comparisons = treatment_comparisons_list,
+                     tip.length = 0, hide.ns = TRUE) + 
+  stat_compare_means(label.y = 50)  +   # Add global p-value
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+```
+
+It appears that Richness, simpson, and shannon are all not significantly affected by community type. Only treatment type (independant variable) from raw/primary treatment to secondary treatment has an impact on biodiversity. 
+
+# Final Info for Reproducibility
+```{r final info}
+end_time <- Sys.time()
+end_time 
+
+elapsed_time <- round((end_time - start_time), 3)
+elapsed_time
+
+# Ensure reproducibility with package version information
+devtools::session_info()
+```

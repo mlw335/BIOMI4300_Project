@@ -1,0 +1,138 @@
+---
+title: "Phylogenetic Tree Construction 2"
+author: "Mark Watson"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document: 
+    code_folding: show
+    theme: spacelab
+    highlight: pygments
+    keep_md: no
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+      toc_depth: 3
+  keep_md: true  
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.align = "center",
+                      fig.path = "BIOMI4300_Project/figures/PhylogeneticTree/") # send any figure output to this folder 
+```
+
+# Goals
+1. Load in fastree unrooted tree 
+2. Add tree to phyloseq object
+3. Visualize Tree
+4. Prune ASVs if needed
+5. Root Tree
+6. Add new tree to phyloseq object
+7. Save 2 phyloseq objects 1. unrooted and 2. rooted
+
+# Input
+1. fasttree
+2. physeq object
+
+# Output
+1. rootedphyseq
+2. unrooted physeq
+
+# Setting up the Environment
+## Set Seed
+```{r set-seed}
+set.seed(238428)
+```
+
+## Timing Script
+```{r timing}
+start_time <- Sys.time()
+start_time
+
+```
+
+## Load Libraries and Phyloseq Object
+```{r load-libraries}
+pacman::p_load(tidyverse, phyloseq, ggtree, phytools, tidytree,  install = FALSE)
+
+# Load physeq 
+load("BIOMI4300_Project/data/processed_physeq.RData")
+processed_physeq <- raw_physeq
+
+# load tree
+unrooted_tree <- read.tree("BIOMI4300_Project/data/ASVs_unrooted.tree")
+unrooted_tree
+```
+
+# Merge phyloseq
+```{r merge-physeq}
+# Intuition check 
+stopifnot(ntaxa(processed_physeq) == ntaxa(unrooted_tree))
+
+# Merge the tree with the phyloseq object 
+unrooted_physeq <- 
+  merge_phyloseq(processed_physeq, unrooted_tree)
+
+```
+
+# plot w/ ggtree
+```{r plot-tree}
+kingdom_tree <- 
+  ggtree(unrooted_physeq) + 
+  # color tips by kingdom 
+  geom_tippoint(mapping = aes(color = Kingdom)) + 
+#  scale_color_manual(values = c("goldenrod1", "cornflowerblue", "grey")) +
+  # Add title 
+  labs(title = "Unrooted Tree") + 
+  #move the legend to the bottom 
+  theme(legend.position = "bottom"); kingdom_tree
+
+kingdom_node_tree <- 
+  kingdom_tree + 
+  # Add the node label 
+  geom_text(aes(label=node), hjust= -0.5, vjust = -0.3, size = 2)
+kingdom_node_tree
+```
+
+# Midroot Our Tree
+```{r midroot}
+# Is the tree rooted?
+new_unrooted_tree <- phy_tree(unrooted_tree)
+
+# Check to see if tree is rooted.. expect it to be false
+is.rooted(new_unrooted_tree)
+
+# Let's midpoint root the tree
+midpoint_rooted_tree <- midpoint.root(new_unrooted_tree)
+
+# Is the new tree rooted? Should be TRUE!
+is.rooted(midpoint_rooted_tree)
+
+
+midpoint_rooted_physeq <- merge_phyloseq(processed_physeq, midpoint_rooted_tree)
+#View our final tree
+
+# Plot midrooted simple tree with no text
+mid_rooted_simple <- ggtree(midpoint_rooted_physeq) +
+  geom_tippoint(aes(color = Phylum))  
+
+mid_rooted_simple
+
+```
+
+# Save phyloseq Object
+```{r save-phyloseq}
+# Save both phyloseq objects with our tree object to one .RData file 
+save(list = c("unrooted_physeq", "midpoint_rooted_physeq"),
+     file = "BIOMI4300_Project/data/phytree_preprocessed_physeq.RData")
+```
+
+# Session Info
+```{r session_info}
+devtools::session_info()
+
+```

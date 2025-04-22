@@ -1,0 +1,612 @@
+---
+title: "Beta Diversity of Microbes Across Treatment and Mussel Comnity Types"
+author: "Mark Watson"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document: 
+    code_folding: show
+    theme: spacelab
+    highlight: pygments
+    keep_md: no
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+      toc_depth: 3
+  keep_md: true  
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.align = "center",
+                      fig.path = "BIOMI4300_Project/figures/B-Diversity/") # send any figure output to this folder 
+```
+
+# Goals
+1. Load in phyloseq data w/ rooted tree/colors
+2. Evaluate sequencing Depth
+3. Normalize Read Counts
+4. Calculate dissimilarities
+  - sorenson
+  - bray-curtis
+  - weighted UNIFRAC
+5. Run PERMANOVA/B-Dispr
+6. Visualize w/:
+  - PCOA
+  - NMDS
+
+# Input
+1. phytree_physeq
+
+# Output
+1. calculated betadiversity dissimilarity measures
+2. figures
+3. statistical tests
+
+# Scientific Question
+How do different mussel community compositions (native, invasive, mixed), affect the bacterial community composition and load of wastewater effluent?
+
+Looking at total counts and relative abundances of potentially harmful wastewater taxa.
+
+
+# Setting up the Environment
+## Set Seed
+```{r set-seed}
+set.seed(238428)
+```
+
+## Timing Script
+```{r timing}
+start_time <- Sys.time()
+start_time
+
+```
+
+## Load Libraries and Phyloseq Object
+```{r load-libraries}
+pacman::p_load(tidyverse, phyloseq, devtools, patchwork, vegan,  install = FALSE)
+
+# Load physeq 
+load("BIOMI4300_Project/data/phytree_preprocessed_physeq.RData")
+
+midpoint_rooted_physeq
+
+metadata_df <-
+  midpoint_rooted_physeq %>%
+  sample_data() %>%
+  data.frame()
+
+# Take a look!
+head(metadata_df)
+
+# Load in colors and function for plotting between different files
+source("BIOMI4300_Project/code/colors.R")
+source("BIOMI4300_Project/code/functions.R")
+```
+
+# Normalizing the Read Depth
+```{r normalizing-reads}
+# calculate read counts per sample 
+raw_TotalSeqs_df <- 
+  midpoint_rooted_physeq %>%
+  # Calculate the total number of sequences/reads
+  sample_sums() %>%
+  data.frame()
+
+# Take a look 
+head(raw_TotalSeqs_df)
+
+# Rename the column 
+colnames(raw_TotalSeqs_df)[1] <- "TotalSeqs"
+
+# add a new column of num_ASVs (RAW, non-noramlized # ASVs)
+raw_TotalSeqsASVs_df <- 
+  raw_TotalSeqs_df %>%
+  mutate(num_ASVs = colSums(otu_table(midpoint_rooted_physeq) > 1))
+
+#View(raw_TotalSeqsASVs_df)
+
+raw_TotalSeqsASVs_df <- raw_TotalSeqsASVs_df %>%
+  tibble::rownames_to_column(var = "names") %>%
+  left_join(metadata_df, by = "names")
+
+# Histogram of Sequence Depth
+rawSeq_histogram <- 
+  raw_TotalSeqsASVs_df %>%
+  ggplot(aes(x = TotalSeqs, color = treatment_type, fill = treatment_type)) + 
+  geom_histogram(bins = 50, alpha = 0.5, position = "identity") + 
+  scale_color_manual(values = treatment_colors) +
+  scale_fill_manual(values = treatment_colors) +
+  labs(title = "Raw Seq Depth Histogram") + 
+  theme_bw()
+
+# Sequence Depth vs Number of ASVs
+rawSeq_vs_numASV_plot <- 
+  raw_TotalSeqsASVs_df %>%
+  ggplot(aes(x = num_ASVs, y = TotalSeqs, color = treatment_type)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) + 
+  scale_color_manual(values = treatment_colors) +
+  labs(title = "Seq Depth vs # ASVs") + 
+  theme_bw()
+
+# Linear model
+summary(lm(TotalSeqs ~ num_ASVs, data = raw_TotalSeqsASVs_df))
+
+# Combine plots
+rawSeq_histogram + rawSeq_vs_numASV_plot + 
+  patchwork::plot_annotation(tag_levels = "A")
+```
+
+Normalizing to lowest count.
+
+Due to treatment types largely affecting the richness of the samples there are fewer sequences in the 'secondary_treatment' samples, this will skew the data, but shoud work for our purposes. Once Normalized B-dispr tests can still be performed accurately. 
+
+# Scale Read Counts
+```{r scale-reads}
+min(sample_sums(midpoint_rooted_physeq))
+
+scaled_physeq <- 
+  midpoint_rooted_physeq %>%
+  scale_reads(round = "matround")
+
+# Confirm seq read depth of scaled_physeq 
+scaled_TotalSeqs_df <- 
+  scaled_physeq %>%
+  sample_sums() %>%
+  data.frame()
+
+colnames(scaled_TotalSeqs_df)[1] <- "TotalSeqs"
+
+# add a new column of num_ASVs (RAW, non-noramlized # ASVs)
+scaled_TotalSeqsASVs_df <- 
+  scaled_TotalSeqs_df %>%
+  mutate(num_ASVs = colSums(otu_table(scaled_physeq) > 1))
+
+scaled_TotalSeqsASVs_df <- scaled_TotalSeqsASVs_df %>%
+  tibble::rownames_to_column(var = "names") %>%
+  left_join(metadata_df, by = "names")
+
+# Plot it! 
+scaledSeq_histogram <- 
+  scaled_TotalSeqs_df %>%
+  ggplot(aes(x = TotalSeqs)) + 
+  geom_histogram(bins = 50) + 
+  labs(title = "Scaled Seq Depth Histogram") + 
+  scale_x_continuous(limits = c(0, 7000)) +
+  theme_bw()
+
+# Scaling always gives us a range! 
+# MInimum sequences
+min(scaled_TotalSeqs_df$TotalSeqs)
+
+# How many is that range? 
+range_seqs <- (max(scaled_TotalSeqs_df$TotalSeqs) - min(scaled_TotalSeqs_df$TotalSeqs))
+range_seqs
+
+# And in terms of percent? 
+range_seqs/max(scaled_TotalSeqs_df$TotalSeqs)
+
+# Set the axis min and max for the next plot 
+max_y <- max(scaled_TotalSeqs_df$TotalSeqs) + 10
+min_y <- min(scaled_TotalSeqs_df$TotalSeqs) - 10
+
+# Now, draw the plot 
+scaledSeq_vs_numASV_plot <- 
+  scaled_TotalSeqsASVs_df %>%
+  ggplot(aes(x = num_ASVs, y = TotalSeqs, color = treatment_type)) + 
+  geom_point() +
+  geom_smooth(method = "lm", aes(group = 1)) +  # Apply smoothing to the whole dataset
+  scale_y_continuous(limits = c(min_y, max_y)) +
+  scale_color_manual(values = treatment_colors) +
+  theme_bw() + 
+  labs(title = "Scaled: Seq Depth vs # ASVs")
+# Put the two plots together.
+scaledSeq_histogram + scaledSeq_vs_numASV_plot +
+  plot_annotation(tag_levels = "A")
+```
+
+Scaled Seq Depth has a range of `range_seqs`. Weirdly negative correlation  between total seqs and ASVs. This may have some biological reason where the points seem to be clustered by treatment type which do have significant differences in Richness.
+
+# Beta Diversity Metrics
+### Question:
+
+How do different mussel community compositions (native, invasive, mixed), affect the bacterial community composition and load of wastewater effluent?
+
+Looking at total counts and relative abundances of potentially harmful wastewater taxa.
+
+### Want to Look at:
+- relative abundances
+- phylogenetic makeup/differences of communities
+
+### Measures to Use:
+- Jaccard = how unique are samples w/o abundance
+- Bray-Curtis = how unique are samples w/ abundance weighting
+- Weighted UniFrac = how unique are samples phylogenetically x abundance
+- Unweighted Unifrac= how usique are samples phylogenetically
+
+```{r beta-diversity-metrics}
+# Bray-Curtis Dissimiliarty
+scaled_bray_dist <- phyloseq::distance(scaled_physeq, method = "bray", binary = FALSE)
+# weighted unifrac
+scaled_wUnifrac_dist <- phyloseq::distance(scaled_physeq, method = "wunifrac")
+# Jaccard Dissimiliarty
+scaled_jaccard_dist <- phyloseq::distance(scaled_physeq, method = "jaccard", binary = FALSE)
+#unweighted unifrac
+scaled_uUnifrac_dist <- phyloseq::distance(scaled_physeq, method = "uunifrac")
+scaled_uUnifrac_dist_matrix <- as.matrix(scaled_uUnifrac_dist)
+```
+
+```{r permanova-testing-treatment}
+# bray curtis treatment
+bray_treatment_adonis_terms1 <- adonis2(scaled_bray_dist ~ treatment_type + mussle_community_composition, data = metadata_df, by = "terms")
+bray_treatment_adonis_terms1
+
+#wUnifrac treatment
+wUnifrac_treatment_adonis_terms1 <- adonis2(scaled_wUnifrac_dist ~ treatment_type + mussle_community_composition , data = metadata_df, by = "terms")
+wUnifrac_treatment_adonis_terms1
+
+#jaccard treatment
+jaccard_treatment_adonis_terms1 <- adonis2(scaled_jaccard_dist ~ treatment_type  + mussle_community_composition , data = metadata_df, by = "terms")
+jaccard_treatment_adonis_terms1
+
+#uUnifrac treatment
+uUnifrac_treatment_adonis_terms1 <- adonis2(scaled_uUnifrac_dist ~ treatment_type + mussle_community_composition , data = metadata_df, by = "terms")
+uUnifrac_treatment_adonis_terms1
+```
+
+```{r permanova-testing-mussels}
+# bray curtis mussels
+bray_mussel_adonis_terms1 <- adonis2(scaled_bray_dist ~  mussle_community_composition + treatment_type, data = metadata_df, by = "terms")
+bray_mussel_adonis_terms1
+
+# wunifrac mussels
+wUnifrac_mussel_adonis_terms1 <- adonis2(scaled_wUnifrac_dist ~ mussle_community_composition + treatment_type, data = metadata_df, by = "terms")
+wUnifrac_mussel_adonis_terms1
+
+# jaccard mussels
+jaccard_mussel_adonis_terms1 <- adonis2(scaled_jaccard_dist ~ mussle_community_composition + treatment_type, data = metadata_df, by = "terms")
+jaccard_mussel_adonis_terms1
+
+#uunifrac mussels
+uUnifrac_mussel_adonis_terms1 <- adonis2(scaled_uUnifrac_dist ~ mussle_community_composition + treatment_type, data = metadata_df, by = "terms")
+uUnifrac_mussel_adonis_terms1
+```
+
+
+## Statistical Interpretation
+- Regardless of B-Diversity Metric used, treatment type always significantly affects the bacterial community of the samples, explaining 30-65% of data with a P value of 0.001.
+
+- Mussel community does not significantly affects the bacterial community of the samples, except when looking at UnweightedUnifrac. Its effect only explaining 3-10% of data with P values ranging from 0.006-0.1
+
+This likely means that Mussel Communities do not have an overal effect on the makeup of the bacterial communities. This stands in contrast to "https://doi.org/10.1016/j.envpol.2024.124648" where they purport significant findings.
+
+Moving forward will be testing WUnifrac and UUnifrac which have the highest percentage of data explained their respective groups:
+- WUnifrac - treatment type (~65%) 
+- UUnifrac - mussel community (~10%)
+
+# Interpreting PERMANOVA w/ Betadispr
+```{r betadispr}
+# wunifrac treatment
+dispr_wunifrac_treatment <- betadisper(scaled_wUnifrac_dist, metadata_df$treatment_type)
+permutest(dispr_wunifrac_treatment)
+
+# uunifrac treatment
+dispr_uunifrac_treatment <- betadisper(scaled_uUnifrac_dist, metadata_df$treatment_type)
+permutest(dispr_uunifrac_treatment)
+
+# wunifrac mussels
+dispr_wunifrac_mussels <- betadisper(scaled_wUnifrac_dist, metadata_df$mussle_community_composition)
+permutest(dispr_wunifrac_mussels)
+
+# uunifrac treatment
+dispr_uunifrac_mussels <- betadisper(scaled_uUnifrac_dist, metadata_df$mussle_community_composition)
+permutest(dispr_uunifrac_mussels)
+
+```
+
+## Statistical Interpretation
+Only Weighted Unifrac of the Treatment type yeilded significant dispersion of samples. This means that there may be other factors at play with the Treatment type leading to increased dispersion of samples.
+
+All other tests performed: unwieghted unifrac of treatment and mussel composition and weighted unifrac of mussel composition did not show significant dispersion.
+
+# PCoA
+```{r PCoA}
+## UUNIFRAC
+# First, calculate PCoA with uunifrac
+scaled_uunifrac_pcoa <- 
+  ordinate(physeq = scaled_physeq,
+           method = "PCoA",
+           distance = "uunifrac")
+
+# Plot it: Uunifrac PCoA  
+uunifrac_pcoa_plot <- 
+  plot_ordination(physeq = scaled_physeq,
+                  ordination = scaled_uunifrac_pcoa,
+                  color = "treatment_type",
+                  shape = "mussle_community_composition",
+                  title = "Unweighted Unifrac PCoA") + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_shape_manual(values = c(15, 16, 17,18)) + 
+  geom_point(size = 5, alpha = 0.5, aes(color = treatment_type)) + 
+  theme_bw() + 
+  theme(legend.position = "right")
+
+
+### WUNIFRAC 
+# Second, calculate PCoA with WUNIFRAC
+scaled_wunifrac_pcoa <- 
+  ordinate(physeq = scaled_physeq,
+           method = "PCoA",
+           distance = "wunifrac")
+
+# Plot it: Bray-Curtis PCoA 
+wunifrac_pcoa_plot <- 
+  plot_ordination(physeq = scaled_physeq,
+                  ordination = scaled_wunifrac_pcoa,
+                  color = "treatment_type",
+                  shape = "mussle_community_composition",
+                  title = "Weighted Unifrac PCoA") + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_shape_manual(values = c(15, 16, 17,18)) + 
+  geom_point(size = 5, alpha = 0.5, aes(color = treatment_type)) + 
+  theme_bw() + 
+  theme(legend.position = "right")
+
+# Show the plots 
+uunifrac_pcoa_plot + wunifrac_pcoa_plot + 
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = "A")
+```
+From these plots it is hard to show any clear conclusions about Mussel Community composition because there is so much clustering due to treatment types. Will try to remove it as a variable before proceeding to see if there are additional affects which may be at play. 
+
+# What would this look like if we split samples by treatment group since we know it affects biological load before introduction to the Mussel Communities?
+
+Using uUnifrac which showed no significant dispersion across samples and the largest portion of the data explained by it (~10%) and using chatGPT to assist in streamlining a loop. I created the following plots attempting to isolate other less important variables. 
+```{r split-by-treatmentgroup-uunifrac-pcoa}
+
+## I heavily used chatGPT for this (probably very obvious) but I believe finally I have statistically relevant results for analysis
+
+# Empty lists for plots and permanova results
+treatment_pcoa_plots <- list()
+permanova_results <- list()
+dispersion_results <- list()
+
+
+# Loop over each unique treatment type
+for (treatment in unique(sample_data(scaled_physeq)$treatment_type)) {
+  
+  # Subset phyloseq object for this treatment group
+  physeq_subset <- subset_samples(scaled_physeq, treatment_type == treatment)
+  
+  # Skip if fewer than 2 samples (distance & PERMANOVA need at least 2)
+  if (nsamples(physeq_subset) < 2) {
+    message("Skipping ", treatment, ": less than 2 samples.")
+    next
+  }
+
+  # Calculate Unweighted UniFrac distance
+  dist_matrix <- phyloseq::distance(physeq_subset, method = "uunifrac")
+
+  # Perform PCoA
+  treatment_pcoa <- ordinate(physeq_subset, method = "PCoA", distance = dist_matrix)
+  
+    # Get metadata for PERMANOVA
+  metadata_subset <- as(sample_data(physeq_subset), "data.frame")
+
+  # Run PERMANOVA (note: no treatment_type in model, only mussel composition!)
+  permanova <- adonis2(dist_matrix ~ mussle_community_composition,
+                                            data = metadata_subset,
+                                            permutations = 999)
+  
+  permanova_results[[treatment]] <- permanova
+  permanova_p <- signif(permanova$`Pr(>F)`[1], 3)
+  
+  # Run Beta Dispersion test
+  dispr <- betadisper(dist_matrix, metadata_subset$mussle_community_composition)
+  disp_result <- permutest(dispr, permutations = 999)
+  dispersion_results[[treatment]] <- disp_result
+  
+  # Extract p-value
+  p_value <- permanova$`Pr(>F)`[1]
+  dispersion_p <- signif(disp_result$tab$`Pr(>F)`[1], 3)
+
+  # Create the plot
+  pcoa_plot <- plot_ordination(physeq_subset,
+                             ordination = treatment_pcoa,
+                             color = "mussle_community_composition",
+                             title = paste("Unweighted UniFrac PCoA -", treatment)) +
+  geom_point(size = 5, alpha = 0.5, aes(color = mussle_community_composition)) +
+  scale_color_manual(values = community_colors) +
+  theme_bw() +
+  theme(legend.position = "right") +
+    annotate("text",
+             x = Inf, y = Inf,
+             label = paste0("PERMANOVA Mussel Community Composition p = ", permanova_p,
+                            "\nDispersion Mussel Community Composition p = ", dispersion_p),
+             hjust = 1.1, vjust = 1.5,
+             size = 3)
+
+  # Store plot
+  treatment_pcoa_plots[[treatment]] <- pcoa_plot
+
+
+}
+
+# Print PERMANOVA Results
+print(permanova_results)
+print(dispersion_results)
+
+ordered_pcoa_plots <- list(
+  treatment_pcoa_plots[["raw_water"]],
+  treatment_pcoa_plots[["primary_treatment"]],
+  treatment_pcoa_plots[["secondary_treatment"]]
+)
+
+# Combine and display all the plots for each treatment type
+wrap_plots(ordered_pcoa_plots) + 
+  plot_annotation(tag_levels = "A")
+
+```
+Once we removed Treatment_type as a variable clearer clustering can be seen across the groupings of mussel community composition. I am unsure if this is statistically significant as I removed a strongly affecing variable, but now we can see clearer the picture the original authors attempted to report. Perhaps NMDS will provide additional insight into what is happening. 
+
+# NMDS
+```{r NMDS-plots}
+# Unweighted UniFrac NMDS
+scaled_uunifrac_nmds <- 
+  ordinate(physeq = scaled_physeq,
+           method = "NMDS",
+           distance = "uunifrac")
+
+# Extract stress value for Unweighted UniFrac NMDS
+stress_uunifrac <- scaled_uunifrac_nmds$stress
+
+# Plot it: Unweighted UniFrac NMDS  
+uunifrac_nmds_plot_group <- 
+  plot_ordination(physeq = scaled_physeq,
+                  ordination = scaled_uunifrac_nmds,
+                  color = "treatment_type",
+                  shape = "mussle_community_composition",
+                  title = paste("Unweighted UniFrac NMDS (Stress =", round(stress_uunifrac, 3), ")")) + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_shape_manual(values = c(15, 16, 17, 18)) + 
+  geom_point(size = 5, alpha = 0.5, aes(color = treatment_type)) + 
+  theme_bw() + 
+  theme(legend.position = "right")
+
+### Weighted UniFrac NMDS
+# Calculate PCoA with Weighted UniFrac
+scaled_wunifrac_nmds <- 
+  ordinate(physeq = scaled_physeq,
+           method = "NMDS",
+           distance = "wunifrac")
+
+# Extract stress value for Weighted UniFrac NMDS
+stress_wunifrac <- scaled_wunifrac_nmds$stress
+
+# Plot it: Weighted UniFrac NMDS  
+wunifrac_nmds_plot_group <- 
+  plot_ordination(physeq = scaled_physeq,
+                  ordination = scaled_wunifrac_nmds,
+                  color = "treatment_type",
+                  shape = "mussle_community_composition",
+                  title = paste("Weighted UniFrac NMDS (Stress =", round(stress_wunifrac, 3), ")")) + 
+  scale_color_manual(values = treatment_colors) + 
+  scale_shape_manual(values = c(15, 16, 17, 18)) + 
+  geom_point(size = 5, alpha = 0.5, aes(color = treatment_type)) + 
+  theme_bw() + 
+  theme(legend.position = "right")
+
+# Show the plots 
+uunifrac_nmds_plot_group + wunifrac_nmds_plot_group + 
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = "A")
+```
+
+```{r split-by-treatmentgroup-uunifrac-NMDS}
+# Initialize list to store NMDS plots
+nmds_plots <- list()
+
+# Loop over each unique treatment type
+for (treatment in unique(sample_data(scaled_physeq)$treatment_type)) {
+  
+  # Subset the phyloseq object for the current treatment type
+  physeq_subset <- subset_samples(scaled_physeq, treatment_type == treatment)
+
+  # Unweighted UniFrac NMDS
+  scaled_uunifrac_nmds <- 
+    ordinate(physeq = physeq_subset,
+             method = "NMDS",
+             distance = "uunifrac")
+  
+  # Extract stress value for Unweighted UniFrac NMDS
+  stress_uunifrac <- scaled_uunifrac_nmds$stress
+  
+  # Plot it: Unweighted UniFrac NMDS without treatment_type coloring
+  uunifrac_nmds_plot <- 
+    plot_ordination(physeq = physeq_subset,
+                    ordination = scaled_uunifrac_nmds,
+                    shape = "mussle_community_composition",
+                    title = paste("Unweighted UniFrac NMDS -", treatment, 
+                                  "(Stress =", round(stress_uunifrac, 3), ")")) + 
+   geom_point(size = 5, alpha = 0.5, aes(color = mussle_community_composition)) +
+  scale_color_manual(values = community_colors) +
+    scale_shape_manual(values = c(15, 16, 17, 18)) +
+    theme_bw() + 
+    theme(legend.position = "right") +
+    guides(color = "none")
+  
+  # Store the plot in the list
+  nmds_plots[[treatment]] <- uunifrac_nmds_plot
+  
+  ### Weighted UniFrac NMDS
+  # Calculate PCoA with Weighted UniFrac
+  scaled_wunifrac_nmds <- 
+    ordinate(physeq = physeq_subset,
+             method = "NMDS",
+             distance = "wunifrac")
+  
+  # Extract stress value for Weighted UniFrac NMDS
+  stress_wunifrac <- scaled_wunifrac_nmds$stress
+  
+  # Plot it: Weighted UniFrac NMDS without treatment_type coloring
+   wunifrac_nmds_plot <- 
+    plot_ordination(physeq = physeq_subset,
+                    ordination = scaled_wunifrac_nmds,
+                    shape = "mussle_community_composition",
+                    title = paste("Weighted UniFrac NMDS -", treatment, 
+                                  "(Stress =", round(stress_wunifrac, 3), ")")) + 
+    geom_point(size = 5, alpha = 0.5, aes(color = mussle_community_composition)) +
+    scale_color_manual(values = community_colors) + 
+    scale_shape_manual(values = c(15, 16, 17, 18)) + 
+    theme_bw() + 
+    theme(legend.position = "right") +
+    guides(color = "none")
+  
+  # Store the plot in the list
+  nmds_plots[[paste(treatment, "_wunifrac")]] <- wunifrac_nmds_plot
+}
+
+ordered_nmds_plots <- list(
+  nmds_plots[["raw_water"]],
+  nmds_plots[["primary_treatment"]],
+  nmds_plots[["secondary_treatment"]],
+  nmds_plots[["raw_water _wunifrac"]],
+  nmds_plots[["primary_treatment _wunifrac"]],
+  nmds_plots[["secondary_treatment _wunifrac"]]
+)
+# Combine and display all the plots for each treatment type
+wrap_plots(ordered_nmds_plots) + 
+  plot_annotation(tag_levels = "A")
+
+```
+This method only worked for Primary Treatment Treated water where one can see distinct clusters. In all other methods there is not enough information without the treatment confounding variable. This makes biological sense as the secondary treatment would remove a large portion of biological load, thus what it leaves behind is largely a product of the treatment method regardless of Mussel COmmunity. 
+
+# Final Analysis
+```{r final-plot}
+# select out unweighted/weighted primary treatmend NMDS plots from NMDS plots
+selected_ordered_nmds_plots <- list(
+  ordered_nmds_plots[[2]],  # raw_water NMDS
+  ordered_nmds_plots[[5]]   # primary_treatment NMDS
+)
+
+wrap_plots(ordered_pcoa_plots) + uunifrac_nmds_plot_group+ selected_ordered_nmds_plots + 
+  plot_annotation(tag_levels = "A")
+```
+With treatment as a counfounding variable it is hard to pinpoint the exact role that the mussel community composition played in the bacterial community's abundance and phylogenetics. When attempting to remove it, we begin to see a clearer picture, but without the proper datapoints in the metadata to find additional contributors of these differences, one can only speculate to what degree these communities may make an impact. 
+
+# Final Info for Reproducibility
+```{r final info}
+end_time <- Sys.time()
+end_time 
+
+elapsed_time <- round((end_time - start_time), 3)
+elapsed_time
+
+# Ensure reproducibility with package version information
+devtools::session_info()
+```
+
